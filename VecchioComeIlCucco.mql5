@@ -1,0 +1,1646 @@
+//+------------------------------------------------------------------+
+//|                        VECCHIO COME IL CUCCO v4.2.4               |
+//|                                      Copyright 2025, TradingBot   |
+//|                             https://www.mql5.com/en/users/trader  |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2025, TradingBot"
+#property link      "https://www.mql5.com/en/users/trader"
+#property version   "4.24"
+#property strict
+#property description "╔═══════════════════════════════════════════════════════════╗"
+#property description "║      VECCHIO COME IL CUCCO v4.2.4 - TGIM Strategy        ║"
+#property description "║                                                           ║"
+#property description "║  ✅ SIMPLIFIED ENTRY - NO GAP/IBS/ATR checks             ║"
+#property description "║  ✅ Entry SEMPRE alle 16:50 lunedì                        ║"
+#property description "║  ✅ Trailing Block System (SL + Grid intelligente)       ║"
+#property description "║  ✅ Risk-Free dopo primo TP                               ║"
+#property description "╚═══════════════════════════════════════════════════════════╝"
+
+#include <Trade\Trade.mqh>
+#include <Trade\PositionInfo.mqh>
+#include <Trade\OrderInfo.mqh>
+
+CTrade trade;
+CPositionInfo position;
+COrderInfo order;
+
+//+------------------------------------------------------------------+
+//| ENUMERATIONS                                                      |
+//+------------------------------------------------------------------+
+enum ENUM_SL_TYPE
+{
+    SL_PERCENT = 0,    // Percentage (%)
+    SL_POINTS = 1      // Points
+};
+
+enum ENUM_TRAIL_MODE
+{
+    TRAIL_CONSERVATIVE = 0,  // Conservative (3 levels)
+    TRAIL_BALANCED = 1,      // Balanced (4 levels) - RECOMMENDED
+    TRAIL_AGGRESSIVE = 2     // Aggressive (5 levels)
+};
+
+//+------------------------------------------------------------------+
+//| INPUT PARAMETERS - ORGANIZED SECTIONS                             |
+//+------------------------------------------------------------------+
+
+//══════════════════════════════════════════════════════════════════
+// 📅 SECTION 1: TIMEZONE & ENTRY TIMING
+//══════════════════════════════════════════════════════════════════
+input group "╔═══════════════════════════════════════════╗"
+input group "║   📅 TIMEZONE & ENTRY TIMING              ║"
+input group "╚═══════════════════════════════════════════╝"
+input int    Broker_GMT_Offset = -1;             // GMT Offset del Broker (-12 to +12)
+input int    Entry1_DayOfWeek = 1;               // Giorno Entry (1=Lunedì, 2=Martedì...)
+input int    Entry1_Hour = 16;                   // Ora Entry (16 = 4PM)
+input int    Entry1_Minute = 50;                 // Minuto Entry (50 = 10 min prima chiusura)
+input int    Entry_Window_Minutes = 5;           // Finestra temporale Entry (minuti)
+
+//══════════════════════════════════════════════════════════════════
+// 💰 SECTION 2: POSITION SIZING (Entry 1, 2, 3)
+//══════════════════════════════════════════════════════════════════
+input group "╔═══════════════════════════════════════════╗"
+input group "║   💰 DIMENSIONE POSIZIONI (Lotti)         ║"
+input group "╚═══════════════════════════════════════════╝"
+input double Entry1_Lots = 1.5;                  // 📍 Entry 1 Lotti (50% - MARKET)
+input double Entry2_Lots = 0.75;                 // 📍 Entry 2 Lotti (25% - BUY LIMIT)
+input double Entry3_Lots = 0.75;                 // 📍 Entry 3 Lotti (25% - BUY LIMIT)
+
+//══════════════════════════════════════════════════════════════════
+// 📊 SECTION 3: ENTRY 2 & 3 LEVELS
+//══════════════════════════════════════════════════════════════════
+input group "╔═══════════════════════════════════════════╗"
+input group "║   📊 LIVELLI ENTRY 2 & 3 (BUY LIMIT)      ║"
+input group "╚═══════════════════════════════════════════╝"
+input double Entry2_Distance_Percent = 0.7;      // Entry 2: % sotto Entry 1
+input double Entry3_Distance_Percent = 0.7;      // Entry 3: % sotto Entry 2
+
+//══════════════════════════════════════════════════════════════════
+// 🛡️ SECTION 4: STOP LOSS CONFIGURATION
+//══════════════════════════════════════════════════════════════════
+input group "╔═══════════════════════════════════════════╗"
+input group "║   🛡️ STOP LOSS UNIFICATO                  ║"
+input group "╚═══════════════════════════════════════════╝"
+input bool   Enable_StopLoss = true;             // ✅ Abilita Stop Loss Unificato
+input ENUM_SL_TYPE StopLoss_Type = SL_PERCENT;   // Tipo Stop Loss
+input double StopLoss_Percent = 2.0;              // Stop Loss % (se tipo Percentage)
+input int    StopLoss_Points = 200;               // Stop Loss Punti (se tipo Points)
+input color  StopLoss_Color = clrRed;            // Colore Linea Stop Loss
+input bool   Enable_Drag_SL = true;               // ✅ Abilita Drag & Drop SL
+
+//══════════════════════════════════════════════════════════════════
+// 🔷 SECTION 5: DYNAMIC GRID BOT (Initial Setup)
+//══════════════════════════════════════════════════════════════════
+input group "╔═══════════════════════════════════════════╗"
+input group "║   🔷 GRID BOT DINAMICO (Setup Iniziale)   ║"
+input group "╚═══════════════════════════════════════════╝"
+input double Grid_Base_Step_Points = 35.0;        // Step Base Grid (punti) - RACCOMANDATO 30-40
+input int    Max_Grid_Orders = 10;                // Max Numero Ordini Grid (iniziale)
+input double Grid_Lot_Size = 0.5;                 // Lotti per Ordine Grid (uniforme)
+input bool   Last_TP_Equals_SL = true;            // ✅ Ultimo Grid TP = Stop Loss
+
+//══════════════════════════════════════════════════════════════════
+// 🚀 SECTION 6: TRAILING BLOCK SYSTEM
+//══════════════════════════════════════════════════════════════════
+input group "╔═══════════════════════════════════════════╗"
+input group "║   🚀 TRAILING BLOCK SYSTEM                ║"
+input group "╚═══════════════════════════════════════════╝"
+input bool   Enable_Grid_Trailing = true;        // ✅ Abilita Trailing Grid+SL
+input ENUM_TRAIL_MODE Trail_Mode = TRAIL_BALANCED; // Modalità Trailing
+input int    Min_Minutes_Between_Trails = 10;    // ⏱️ Minuti Minimi tra Trailing (10-30)
+input double Trail_Grid_Offset_Percent = 1.0;    // Offset Grid % (respiro sotto prezzo)
+input int    Min_Grid_Range_Points = 60;         // Range Minimo Grid (punti)
+input int    Max_Grid_Orders_After_Trail = 5;    // Max Ordini Grid dopo Trailing
+
+//──────────────────────────────────────────────────────────────────
+// TRAIL TRIGGERS - CONSERVATIVE MODE
+//──────────────────────────────────────────────────────────────────
+input group "  ─── Triggers Conservative (se selezionato) ───"
+input double Conservative_Trigger_1 = 0.7;       // Trigger 1: % profit
+input double Conservative_Trigger_2 = 1.3;       // Trigger 2: % profit
+input double Conservative_Trigger_3 = 2.0;       // Trigger 3: % profit
+input double Conservative_SL_Offset_1 = 0.0;     // SL Lock 1: % profit
+input double Conservative_SL_Offset_2 = 0.5;     // SL Lock 2: % profit
+input double Conservative_SL_Offset_3 = 1.0;     // SL Lock 3: % profit
+
+//──────────────────────────────────────────────────────────────────
+// TRAIL TRIGGERS - BALANCED MODE (RECOMMENDED)
+//──────────────────────────────────────────────────────────────────
+input group "  ─── Triggers Balanced ⭐ RACCOMANDATO ───"
+input double Balanced_Trigger_1 = 0.5;           // Trigger 1: % profit
+input double Balanced_Trigger_2 = 1.0;           // Trigger 2: % profit
+input double Balanced_Trigger_3 = 1.5;           // Trigger 3: % profit
+input double Balanced_Trigger_4 = 2.0;           // Trigger 4: % profit
+input double Balanced_SL_Offset_1 = 0.0;         // SL Lock 1: % profit (breakeven)
+input double Balanced_SL_Offset_2 = 0.3;         // SL Lock 2: % profit
+input double Balanced_SL_Offset_3 = 0.7;         // SL Lock 3: % profit
+input double Balanced_SL_Offset_4 = 1.2;         // SL Lock 4: % profit
+
+//──────────────────────────────────────────────────────────────────
+// TRAIL TRIGGERS - AGGRESSIVE MODE
+//──────────────────────────────────────────────────────────────────
+input group "  ─── Triggers Aggressive (se selezionato) ───"
+input double Aggressive_Trigger_1 = 0.3;         // Trigger 1: % profit
+input double Aggressive_Trigger_2 = 0.7;         // Trigger 2: % profit
+input double Aggressive_Trigger_3 = 1.0;         // Trigger 3: % profit
+input double Aggressive_Trigger_4 = 1.5;         // Trigger 4: % profit
+input double Aggressive_Trigger_5 = 2.0;         // Trigger 5: % profit
+input double Aggressive_SL_Offset_1 = 0.0;       // SL Lock 1: % profit
+input double Aggressive_SL_Offset_2 = 0.2;       // SL Lock 2: % profit
+input double Aggressive_SL_Offset_3 = 0.5;       // SL Lock 3: % profit
+input double Aggressive_SL_Offset_4 = 0.8;       // SL Lock 4: % profit
+input double Aggressive_SL_Offset_5 = 1.3;       // SL Lock 5: % profit
+
+//══════════════════════════════════════════════════════════════════
+// 🎯 SECTION 7: TAKE PROFIT LEVELS
+//══════════════════════════════════════════════════════════════════
+input group "╔═══════════════════════════════════════════╗"
+input group "║   🎯 TAKE PROFIT (Tracking)               ║"
+input group "╚═══════════════════════════════════════════╝"
+input double TP1_Percent = 0.7;                  // Take Profit 1 %
+input double TP2_Percent = 1.3;                  // Take Profit 2 %
+input double TP3_Percent = 2.0;                  // Take Profit 3 %
+input bool   Auto_Close_At_TP = false;           // ✅ Chiudi Automaticamente a TP
+input double TP1_Close_Percent = 50.0;           // Chiudi % a TP1 (se auto-close)
+input double TP2_Close_Percent = 30.0;           // Chiudi % a TP2 (se auto-close)
+
+//══════════════════════════════════════════════════════════════════
+// 🗑️ SECTION 8: PENDING ORDERS MANAGEMENT
+//══════════════════════════════════════════════════════════════════
+input group "╔═══════════════════════════════════════════╗"
+input group "║   🗑️ CANCELLAZIONE ORDINI PENDING         ║"
+input group "╚═══════════════════════════════════════════╝"
+input bool   Enable_Pending_Cancel = true;       // ✅ Auto-cancella ordini pending
+input int    Cancel_Pending_Day = 2;             // Giorno Cancellazione (2=Martedì)
+input int    Cancel_Pending_Hour = 21;           // Ora Cancellazione
+input int    Cancel_Pending_Minute = 30;         // Minuto Cancellazione
+
+//══════════════════════════════════════════════════════════════════
+// 🎨 SECTION 9: VISUALIZATION & DASHBOARD
+//══════════════════════════════════════════════════════════════════
+input group "╔═══════════════════════════════════════════╗"
+input group "║   🎨 VISUALIZZAZIONE & DASHBOARD          ║"
+input group "╚═══════════════════════════════════════════╝"
+input bool   Show_Dashboard = true;              // ✅ Mostra Dashboard
+input int    Dashboard_X = 20;                   // Dashboard X (pixel)
+input int    Dashboard_Y = 50;                   // Dashboard Y (pixel)
+input int    Dashboard_Width = 420;              // Dashboard Larghezza (pixel)
+input int    Dashboard_Height = 480;             // Dashboard Altezza (pixel)
+input color  Dashboard_BG_Color = clrDarkSlateBlue; // Colore Sfondo Dashboard
+input int    Dashboard_BG_Opacity = 200;         // Opacità Sfondo (0-255)
+input color  Dashboard_Border_Color = clrGold;   // Colore Bordo Dashboard
+input color  Dashboard_Text_Color = clrWhite;    // Colore Testo
+input bool   Show_Lines = true;                  // ✅ Mostra Linee Prezzi
+input bool   Show_TP_Dots = true;                // ✅ Mostra Dots TP (blu)
+input bool   Show_SL_Dots = true;                // ✅ Mostra Dots SL (rosso)
+input color  Entry_Filled_Color = clrLime;       // Colore Entry Eseguiti
+input color  Entry_Pending_Color = clrYellow;    // Colore Entry Pending
+input color  Grid_Color = clrOrange;             // Colore Grid Lines
+input color  TP_Dot_Color = clrDodgerBlue;       // Colore TP Dots
+input color  SL_Dot_Color = clrRed;              // Colore SL Dots
+
+//══════════════════════════════════════════════════════════════════
+// 🔧 SECTION 10: SYSTEM SETTINGS
+//══════════════════════════════════════════════════════════════════
+input group "╔═══════════════════════════════════════════╗"
+input group "║   🔧 IMPOSTAZIONI SISTEMA                 ║"
+input group "╚═══════════════════════════════════════════╝"
+input int    Magic_Number = 777888;              // Magic Number EA
+
+//+------------------------------------------------------------------+
+//| GLOBAL VARIABLES                                                  |
+//+------------------------------------------------------------------+
+
+// Main Entries State
+bool     Entry1_Executed = false;
+bool     Entry2_Executed = false;
+bool     Entry3_Executed = false;
+double   Entry1_Price = 0;
+double   Entry2_Price = 0;
+double   Entry3_Price = 0;
+ulong    Entry1_Ticket = 0;
+ulong    Entry2_Ticket = 0;
+ulong    Entry3_Ticket = 0;
+
+// Stop Loss
+double   StopLoss_Price = 0;
+double   Original_StopLoss_Price = 0;
+
+// Dynamic Grid State
+int      Num_Grid_Orders = 0;
+double   Grid_Dynamic_Step = 0;
+double   Grid_Triggers[];
+double   Grid_TPs[];
+ulong    Grid_Tickets[];
+bool     Grid_Executed[];
+
+// Take Profit tracking
+bool     TP1_Hit = false;
+bool     TP2_Hit = false;
+bool     TP3_Hit = false;
+
+// Trailing Block System
+bool     Trailing_Active = false;
+int      Current_Trail_Level = 0;
+datetime Last_Trail_Time = 0;
+double   Trail_Triggers[];
+double   Trail_SL_Offsets[];
+int      Num_Trail_Levels = 0;
+
+// System state
+bool     Main_Entry_Placed = false;
+bool     Pending_Orders_Cancelled = false;
+bool     Entry_Checked_This_Week = false;
+
+// Dashboard optimization
+datetime Last_Dashboard_Update = 0;
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                    |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+    Print("╔═══════════════════════════════════════════════════════════════════╗");
+    Print("║                                                                   ║");
+    Print("║           VECCHIO COME IL CUCCO v4.2.4 - INITIALIZED             ║");
+    Print("║                  TGIM Strategy Expert Advisor                     ║");
+    Print("║                   🎯 SIMPLIFIED ENTRY VERSION 🎯                  ║");
+    Print("║                                                                   ║");
+    Print("║  ✅ NO Gap/IBS/ATR checks - Entry SEMPRE a orario fisso          ║");
+    Print("║  ⚡ Trailing Block System: SL + Grid Dinamico                     ║");
+    Print("║  💚 Risk-Free dopo primo TP                                       ║");
+    Print("║                                                                   ║");
+    Print("╚═══════════════════════════════════════════════════════════════════╝");
+    
+    // Set magic number
+    trade.SetExpertMagicNumber(Magic_Number);
+    trade.SetDeviationInPoints(10);
+    
+    // Validate inputs
+    if(Entry1_Lots <= 0 || Entry2_Lots <= 0 || Entry3_Lots <= 0)
+    {
+        Print("❌ ERROR: Lot sizes must be positive");
+        return(INIT_PARAMETERS_INCORRECT);
+    }
+    
+    if(Enable_StopLoss && StopLoss_Percent <= 0 && StopLoss_Points <= 0)
+    {
+        Print("❌ ERROR: Stop Loss must be positive");
+        return(INIT_PARAMETERS_INCORRECT);
+    }
+    
+    if(Entry_Window_Minutes <= 0 || Entry_Window_Minutes > 60)
+    {
+        Print("❌ ERROR: Entry window must be 1-60 minutes");
+        return(INIT_PARAMETERS_INCORRECT);
+    }
+    
+    // Initialize trailing arrays
+    InitializeTrailingArrays();
+    
+    // Print configuration
+    Print("═══════════════════════════════════════════════════════════════════");
+    Print("                    CONFIGURATION SUMMARY                          ");
+    Print("═══════════════════════════════════════════════════════════════════");
+    
+    datetime server_time = TimeCurrent();
+    MqlDateTime dt;
+    TimeToStruct(server_time, dt);
+    
+    Print("📍 SERVER TIME: ", TimeToString(server_time, TIME_DATE|TIME_MINUTES));
+    Print("   GMT Offset: ", (Broker_GMT_Offset >= 0 ? "+" : ""), Broker_GMT_Offset, " hours");
+    
+    datetime adjusted = server_time + (Broker_GMT_Offset * 3600);
+    TimeToStruct(adjusted, dt);
+    Print("   Adjusted: ", TimeToString(adjusted, TIME_DATE|TIME_MINUTES));
+    
+    Print("");
+    Print("🎯 ENTRY CONFIGURATION (SIMPLIFIED):");
+    Print("   ✅ NO GAP CHECK");
+    Print("   ✅ NO IBS CHECK");
+    Print("   ✅ NO ATR CHECK");
+    Print("   Target Day: ", Entry1_DayOfWeek, " (1=Monday)");
+    Print("   Target Time: ", Entry1_Hour, ":", StringFormat("%02d", Entry1_Minute));
+    Print("   Window: ", Entry_Window_Minutes, " minutes");
+    Print("   Entry Lots: ", Entry1_Lots, " + ", Entry2_Lots, " + ", Entry3_Lots);
+    
+    Print("");
+    Print("🛡️  STOP LOSS:");
+    if(Enable_StopLoss)
+    {
+        if(StopLoss_Type == SL_PERCENT)
+            Print("   Type: Percent (-", StopLoss_Percent, "%)");
+        else
+            Print("   Type: Points (-", StopLoss_Points, " points)");
+    }
+    
+    Print("");
+    Print("🔷 GRID BOT:");
+    Print("   Base Step: ", Grid_Base_Step_Points, " points");
+    Print("   Max Orders: ", Max_Grid_Orders);
+    Print("   Lot Size: ", Grid_Lot_Size);
+    
+    Print("");
+    Print("🚀 TRAILING BLOCK SYSTEM:");
+    if(Enable_Grid_Trailing)
+    {
+        string mode_name = "";
+        switch(Trail_Mode)
+        {
+            case TRAIL_CONSERVATIVE: mode_name = "Conservative (3 levels)"; break;
+            case TRAIL_BALANCED: mode_name = "Balanced (4 levels) ⭐"; break;
+            case TRAIL_AGGRESSIVE: mode_name = "Aggressive (5 levels)"; break;
+        }
+        Print("   Status: ENABLED");
+        Print("   Mode: ", mode_name);
+        Print("   Levels: ", Num_Trail_Levels);
+    }
+    
+    Print("═══════════════════════════════════════════════════════════════════");
+    Print("✅ Initialization successful - Symbol: ", _Symbol);
+    Print("═══════════════════════════════════════════════════════════════════");
+    Print("");
+    Print("🟢 EA READY - Will enter at ", Entry1_Hour, ":", 
+          StringFormat("%02d", Entry1_Minute), " on day ", Entry1_DayOfWeek);
+    Print("");
+    
+    return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Initialize Trailing Arrays                                        |
+//+------------------------------------------------------------------+
+void InitializeTrailingArrays()
+{
+    switch(Trail_Mode)
+    {
+        case TRAIL_CONSERVATIVE:
+            Num_Trail_Levels = 3;
+            ArrayResize(Trail_Triggers, 3);
+            ArrayResize(Trail_SL_Offsets, 3);
+            Trail_Triggers[0] = Conservative_Trigger_1;
+            Trail_Triggers[1] = Conservative_Trigger_2;
+            Trail_Triggers[2] = Conservative_Trigger_3;
+            Trail_SL_Offsets[0] = Conservative_SL_Offset_1;
+            Trail_SL_Offsets[1] = Conservative_SL_Offset_2;
+            Trail_SL_Offsets[2] = Conservative_SL_Offset_3;
+            break;
+            
+        case TRAIL_BALANCED:
+            Num_Trail_Levels = 4;
+            ArrayResize(Trail_Triggers, 4);
+            ArrayResize(Trail_SL_Offsets, 4);
+            Trail_Triggers[0] = Balanced_Trigger_1;
+            Trail_Triggers[1] = Balanced_Trigger_2;
+            Trail_Triggers[2] = Balanced_Trigger_3;
+            Trail_Triggers[3] = Balanced_Trigger_4;
+            Trail_SL_Offsets[0] = Balanced_SL_Offset_1;
+            Trail_SL_Offsets[1] = Balanced_SL_Offset_2;
+            Trail_SL_Offsets[2] = Balanced_SL_Offset_3;
+            Trail_SL_Offsets[3] = Balanced_SL_Offset_4;
+            break;
+            
+        case TRAIL_AGGRESSIVE:
+            Num_Trail_Levels = 5;
+            ArrayResize(Trail_Triggers, 5);
+            ArrayResize(Trail_SL_Offsets, 5);
+            Trail_Triggers[0] = Aggressive_Trigger_1;
+            Trail_Triggers[1] = Aggressive_Trigger_2;
+            Trail_Triggers[2] = Aggressive_Trigger_3;
+            Trail_Triggers[3] = Aggressive_Trigger_4;
+            Trail_Triggers[4] = Aggressive_Trigger_5;
+            Trail_SL_Offsets[0] = Aggressive_SL_Offset_1;
+            Trail_SL_Offsets[1] = Aggressive_SL_Offset_2;
+            Trail_SL_Offsets[2] = Aggressive_SL_Offset_3;
+            Trail_SL_Offsets[3] = Aggressive_SL_Offset_4;
+            Trail_SL_Offsets[4] = Aggressive_SL_Offset_5;
+            break;
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                  |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+    DeleteAllObjects();
+    
+    Print("╔═══════════════════════════════════════════════════════════════════╗");
+    Print("║             VECCHIO COME IL CUCCO v4.2.4 - SHUTDOWN               ║");
+    Print("╚═══════════════════════════════════════════════════════════════════╝");
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                              |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+    // Update visualization
+    if(Show_Dashboard && TimeCurrent() - Last_Dashboard_Update >= 1)
+    {
+        UpdateDashboard();
+        Last_Dashboard_Update = TimeCurrent();
+    }
+    
+    if(Show_Lines)
+        UpdatePriceLines();
+    
+    // Check for main entry signal
+    if(!Main_Entry_Placed && !Entry_Checked_This_Week)
+    {
+        if(IsTimeForMainEntry())
+        {
+            Entry_Checked_This_Week = true;
+            
+            datetime current_time = TimeCurrent() + (Broker_GMT_Offset * 3600);
+            
+            Print("╔═══════════════════════════════════════════════════════════════════╗");
+            Print("║               ⏰ ENTRY TIME REACHED - ENTERING! ⏰                ║");
+            Print("╚═══════════════════════════════════════════════════════════════════╝");
+            Print("🕐 Time: ", TimeToString(current_time, TIME_DATE|TIME_MINUTES));
+            Print("✅ NO CONDITIONS TO CHECK - Direct entry!");
+            Print("-------------------------------------------------------------------");
+            
+            PlaceMainEntry();
+        }
+    }
+    
+    // Reset weekly state on Sunday
+    datetime current_time = TimeCurrent() + (Broker_GMT_Offset * 3600);
+    MqlDateTime dt;
+    TimeToStruct(current_time, dt);
+    if(dt.day_of_week == 0 && Entry_Checked_This_Week)
+    {
+        Print("📅 New week - Resetting flags");
+        ResetWeeklyState();
+    }
+    
+    // Cancel pending orders if enabled
+    if(Enable_Pending_Cancel && !Pending_Orders_Cancelled)
+    {
+        if(IsTimeForPendingCancel())
+        {
+            CancelPendingOrders();
+            Pending_Orders_Cancelled = true;
+        }
+    }
+    
+    // Manage open positions + Trailing
+    if(Entry1_Executed || Entry2_Executed || Entry3_Executed)
+    {
+        ManageOpenPositions();
+        
+        if(Enable_Grid_Trailing && Entry1_Executed)
+        {
+            CheckAndExecuteTrailing();
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Chart event handler                                               |
+//+------------------------------------------------------------------+
+void OnChartEvent(const int id,
+                  const long &lparam,
+                  const double &dparam,
+                  const string &sparam)
+{
+    if(Enable_Drag_SL && id == CHARTEVENT_OBJECT_DRAG)
+    {
+        if(sparam == "TGIM_StopLoss_Line")
+        {
+            double newSL = ObjectGetDouble(0, "TGIM_StopLoss_Line", OBJPROP_PRICE);
+            
+            if(!Entry1_Executed || newSL >= Entry1_Price)
+            {
+                Print("❌ Stop Loss must be below entry price!");
+                if(StopLoss_Price > 0)
+                    ObjectSetDouble(0, "TGIM_StopLoss_Line", OBJPROP_PRICE, StopLoss_Price);
+                return;
+            }
+            
+            bool any_grid_filled = false;
+            for(int i=0; i<Num_Grid_Orders; i++)
+            {
+                if(Grid_Executed[i])
+                {
+                    any_grid_filled = true;
+                    break;
+                }
+            }
+            
+            if(any_grid_filled)
+            {
+                Print("❌ Cannot drag SL: Grid orders already filled!");
+                ObjectSetDouble(0, "TGIM_StopLoss_Line", OBJPROP_PRICE, StopLoss_Price);
+                return;
+            }
+            
+            StopLoss_Price = newSL;
+            Print("✅ Stop Loss dragged to: ", DoubleToString(newSL, 2));
+            
+            if(Num_Grid_Orders > 0)
+            {
+                Print("🔄 Recalculating grid...");
+                DeleteAllGridOrders();
+                CalculateAndPlaceDynamicGrid();
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Reset weekly state                                                |
+//+------------------------------------------------------------------+
+void ResetWeeklyState()
+{
+    Entry_Checked_This_Week = false;
+    Entry1_Executed = false;
+    Entry2_Executed = false;
+    Entry3_Executed = false;
+    Main_Entry_Placed = false;
+    Pending_Orders_Cancelled = false;
+    TP1_Hit = false;
+    TP2_Hit = false;
+    TP3_Hit = false;
+    Trailing_Active = false;
+    Current_Trail_Level = 0;
+}
+
+//+------------------------------------------------------------------+
+//| Check if it's time for main entry (SIMPLIFIED - NO FILTERS)      |
+//+------------------------------------------------------------------+
+bool IsTimeForMainEntry()
+{
+    datetime current_time = TimeCurrent() + (Broker_GMT_Offset * 3600);
+    MqlDateTime dt;
+    TimeToStruct(current_time, dt);
+    
+    // Check day
+    if(dt.day_of_week != Entry1_DayOfWeek)
+        return false;
+    
+    // Check time window
+    int current_minutes = dt.hour * 60 + dt.min;
+    int start_minutes = Entry1_Hour * 60 + Entry1_Minute;
+    int end_minutes = start_minutes + Entry_Window_Minutes;
+    
+    return (current_minutes >= start_minutes && current_minutes < end_minutes);
+}
+
+//+------------------------------------------------------------------+
+//| Check if it's time to cancel pending orders                       |
+//+------------------------------------------------------------------+
+bool IsTimeForPendingCancel()
+{
+    datetime current_time = TimeCurrent() + (Broker_GMT_Offset * 3600);
+    MqlDateTime dt;
+    TimeToStruct(current_time, dt);
+    
+    return (dt.day_of_week == Cancel_Pending_Day &&
+            dt.hour == Cancel_Pending_Hour &&
+            dt.min >= Cancel_Pending_Minute &&
+            dt.min < Cancel_Pending_Minute + 5);
+}
+
+//+------------------------------------------------------------------+
+//| Place main entry (NO CONDITIONS CHECK)                            |
+//+------------------------------------------------------------------+
+void PlaceMainEntry()
+{
+    Print("╔═══════════════════════════════════════════════════════════════════╗");
+    Print("║                   🚀 PLACING MAIN ENTRY 🚀                        ║");
+    Print("╚═══════════════════════════════════════════════════════════════════╝");
+    
+    double current_price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+    
+    Print("📌 ENTRY 1: Market order (50%)");
+    Print("   Price: ", DoubleToString(current_price, 2));
+    Print("   Lots: ", DoubleToString(Entry1_Lots, 2));
+    
+    if(trade.Buy(Entry1_Lots, _Symbol, current_price, 0, 0, "TGIM_Entry1"))
+    {
+        Entry1_Ticket = trade.ResultOrder();
+        Entry1_Price = current_price;
+        Entry1_Executed = true;
+        
+        Print("✅ ENTRY 1 executed: Ticket ", Entry1_Ticket, " @ ", 
+              DoubleToString(Entry1_Price, 2));
+        
+        if(Enable_StopLoss)
+        {
+            CalculateStopLoss();
+            
+            if(StopLoss_Price > 0)
+            {
+                if(trade.PositionModify(Entry1_Ticket, StopLoss_Price, 0))
+                {
+                    Print("✅ Stop Loss applied: ", DoubleToString(StopLoss_Price, 2));
+                }
+            }
+        }
+    }
+    else
+    {
+        Print("❌ ENTRY 1 FAILED: ", trade.ResultRetcodeDescription());
+        return;
+    }
+    
+    Print("-------------------------------------------------------------------");
+    
+    Entry2_Price = Entry1_Price * (1 - Entry2_Distance_Percent/100.0);
+    Print("📌 ENTRY 2: Buy Limit (25%)");
+    Print("   Price: ", DoubleToString(Entry2_Price, 2));
+    Print("   Lots: ", DoubleToString(Entry2_Lots, 2));
+    
+    if(trade.BuyLimit(Entry2_Lots, Entry2_Price, _Symbol, 0, 0, 
+                      ORDER_TIME_GTC, 0, "TGIM_Entry2"))
+    {
+        Entry2_Ticket = trade.ResultOrder();
+        Print("✅ ENTRY 2 placed: Ticket ", Entry2_Ticket);
+    }
+    
+    Print("-------------------------------------------------------------------");
+    
+    Entry3_Price = Entry2_Price * (1 - Entry3_Distance_Percent/100.0);
+    Print("📌 ENTRY 3: Buy Limit (25%)");
+    Print("   Price: ", DoubleToString(Entry3_Price, 2));
+    Print("   Lots: ", DoubleToString(Entry3_Lots, 2));
+    
+    if(trade.BuyLimit(Entry3_Lots, Entry3_Price, _Symbol, 0, 0,
+                      ORDER_TIME_GTC, 0, "TGIM_Entry3"))
+    {
+        Entry3_Ticket = trade.ResultOrder();
+        Print("✅ ENTRY 3 placed: Ticket ", Entry3_Ticket);
+    }
+    
+    Print("-------------------------------------------------------------------");
+    
+    if(Enable_StopLoss && StopLoss_Price > 0)
+    {
+        CalculateAndPlaceDynamicGrid();
+    }
+    
+    Main_Entry_Placed = true;
+    
+    Print("╔═══════════════════════════════════════════════════════════════════╗");
+    Print("║          ✅ ALL ORDERS PLACED SUCCESSFULLY ✅                     ║");
+    Print("╚═══════════════════════════════════════════════════════════════════╝");
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Stop Loss                                               |
+//+------------------------------------------------------------------+
+void CalculateStopLoss()
+{
+    if(!Enable_StopLoss)
+    {
+        StopLoss_Price = 0;
+        return;
+    }
+    
+    double sl_price = 0;
+    
+    if(StopLoss_Type == SL_PERCENT)
+    {
+        sl_price = Entry1_Price * (1.0 - StopLoss_Percent/100.0);
+    }
+    else
+    {
+        sl_price = Entry1_Price - (StopLoss_Points * _Point);
+    }
+    
+    int stops_level = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+    double min_distance = stops_level * _Point;
+    double actual_distance = Entry1_Price - sl_price;
+    
+    if(stops_level > 0 && actual_distance < min_distance)
+    {
+        Print("⚠️  Adjusting SL to meet broker minimum");
+        sl_price = Entry1_Price - min_distance - (10 * _Point);
+    }
+    
+    StopLoss_Price = sl_price;
+    Original_StopLoss_Price = sl_price;
+    
+    Print("🛡️  Stop Loss: ", DoubleToString(StopLoss_Price, 2),
+          " (-", DoubleToString((Entry1_Price - StopLoss_Price) / Entry1_Price * 100, 2), "%)");
+}
+
+//+------------------------------------------------------------------+
+//| Calculate and Place Dynamic Grid                                  |
+//+------------------------------------------------------------------+
+void CalculateAndPlaceDynamicGrid()
+{
+    Print("╔═══════════════════════════════════════════════════════════════════╗");
+    Print("║              🔷 CALCULATING DYNAMIC GRID 🔷                       ║");
+    Print("╚═══════════════════════════════════════════════════════════════════╝");
+    
+    if(StopLoss_Price <= 0 || Entry1_Price <= 0)
+    {
+        Print("❌ Cannot calculate grid: Invalid prices");
+        return;
+    }
+    
+    double distance_price = Entry1_Price - StopLoss_Price;
+    double distance_points = distance_price / _Point;
+    
+    Print("📏 Distance: ", DoubleToString(distance_points, 1), " points");
+    
+    double num_grids_raw = distance_points / Grid_Base_Step_Points;
+    Num_Grid_Orders = (int)MathCeil(num_grids_raw);
+    
+    if(Num_Grid_Orders > Max_Grid_Orders)
+        Num_Grid_Orders = Max_Grid_Orders;
+    if(Num_Grid_Orders < 1)
+        Num_Grid_Orders = 1;
+    
+    Grid_Dynamic_Step = distance_price / Num_Grid_Orders;
+    double grid_step_points = Grid_Dynamic_Step / _Point;
+    
+    Print("   Grids: ", Num_Grid_Orders, " with ", 
+          DoubleToString(grid_step_points, 1), " points spacing");
+    
+    ArrayResize(Grid_Triggers, Num_Grid_Orders);
+    ArrayResize(Grid_TPs, Num_Grid_Orders);
+    ArrayResize(Grid_Tickets, Num_Grid_Orders);
+    ArrayResize(Grid_Executed, Num_Grid_Orders);
+    
+    Print("-------------------------------------------------------------------");
+    Print("Grid levels:");
+    
+    int success = 0;
+    for(int i=0; i<Num_Grid_Orders; i++)
+    {
+        Grid_Triggers[i] = Entry1_Price - (Grid_Dynamic_Step * (i+1));
+        
+        if(i == Num_Grid_Orders - 1 && Last_TP_Equals_SL)
+            Grid_TPs[i] = StopLoss_Price;
+        else if(i < Num_Grid_Orders - 1)
+            Grid_TPs[i] = Grid_Triggers[i+1];
+        else
+            Grid_TPs[i] = StopLoss_Price;
+        
+        Print("   Grid ", i+1, ": ", DoubleToString(Grid_Triggers[i], 2),
+              " -> ", DoubleToString(Grid_TPs[i], 2));
+        
+        Grid_Tickets[i] = 0;
+        Grid_Executed[i] = false;
+        
+        string comment = StringFormat("TGIM_Grid_%d", i+1);
+        
+        if(trade.SellStop(Grid_Lot_Size, Grid_Triggers[i], _Symbol,
+                          0, Grid_TPs[i], ORDER_TIME_GTC, 0, comment))
+        {
+            Grid_Tickets[i] = trade.ResultOrder();
+            success++;
+        }
+    }
+    
+    Print("╔═══════════════════════════════════════════════════════════════════╗");
+    Print("║       ✅ GRID: ", success, "/", Num_Grid_Orders, " orders placed                        ║");
+    Print("╚═══════════════════════════════════════════════════════════════════╝");
+}
+
+//+------------------------------------------------------------------+
+//| Delete all grid orders                                             |
+//+------------------------------------------------------------------+
+void DeleteAllGridOrders()
+{
+    int deleted = 0;
+    for(int i=0; i<Num_Grid_Orders; i++)
+    {
+        if(Grid_Tickets[i] > 0 && !Grid_Executed[i])
+        {
+            if(trade.OrderDelete(Grid_Tickets[i]))
+                deleted++;
+        }
+    }
+    
+    ArrayResize(Grid_Triggers, 0);
+    ArrayResize(Grid_TPs, 0);
+    ArrayResize(Grid_Tickets, 0);
+    ArrayResize(Grid_Executed, 0);
+    Num_Grid_Orders = 0;
+    
+    Print("🗑️  Deleted ", deleted, " grid orders");
+}
+
+//+------------------------------------------------------------------+
+//| Cancel pending orders                                              |
+//+------------------------------------------------------------------+
+void CancelPendingOrders()
+{
+    Print("╔═══════════════════════════════════════════════════════════════════╗");
+    Print("║              🗑️  CANCELLING PENDING ORDERS 🗑️                     ║");
+    Print("╚═══════════════════════════════════════════════════════════════════╝");
+    
+    int cancelled = 0;
+    
+    if(Entry2_Ticket > 0 && !Entry2_Executed)
+    {
+        if(trade.OrderDelete(Entry2_Ticket))
+            cancelled++;
+    }
+    
+    if(Entry3_Ticket > 0 && !Entry3_Executed)
+    {
+        if(trade.OrderDelete(Entry3_Ticket))
+            cancelled++;
+    }
+    
+    for(int i=0; i<Num_Grid_Orders; i++)
+    {
+        if(Grid_Tickets[i] > 0 && !Grid_Executed[i])
+        {
+            if(trade.OrderDelete(Grid_Tickets[i]))
+                cancelled++;
+        }
+    }
+    
+    Print("✅ Cancelled: ", cancelled, " orders");
+}
+
+//+------------------------------------------------------------------+
+//| Manage open positions                                              |
+//+------------------------------------------------------------------+
+void ManageOpenPositions()
+{
+    double total_profit = 0;
+    double total_lots = 0;
+    double weighted_entry = 0;
+    
+    for(int i=0; i<PositionsTotal(); i++)
+    {
+        if(position.SelectByIndex(i))
+        {
+            if(position.Symbol() == _Symbol && position.Magic() == Magic_Number)
+            {
+                total_profit += position.Profit();
+                total_lots += position.Volume();
+                weighted_entry += position.PriceOpen() * position.Volume();
+            }
+        }
+    }
+    
+    if(total_lots > 0)
+    {
+        double avg_entry = weighted_entry / total_lots;
+        double current_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+        double profit_percent = (current_price - avg_entry) / avg_entry * 100.0;
+        
+        if(!TP1_Hit && profit_percent >= TP1_Percent)
+        {
+            Print("🎯 TP1 HIT at +", DoubleToString(profit_percent, 2), "%");
+            TP1_Hit = true;
+            
+            if(Auto_Close_At_TP && TP1_Close_Percent > 0)
+            {
+                ClosePercentOfPositions(TP1_Close_Percent, "TP1");
+            }
+        }
+        
+        if(!TP2_Hit && profit_percent >= TP2_Percent)
+        {
+            Print("🎯 TP2 HIT at +", DoubleToString(profit_percent, 2), "%");
+            TP2_Hit = true;
+            
+            if(Auto_Close_At_TP && TP2_Close_Percent > 0)
+            {
+                ClosePercentOfPositions(TP2_Close_Percent, "TP2");
+            }
+        }
+        
+        if(!TP3_Hit && profit_percent >= TP3_Percent)
+        {
+            Print("🎯 TP3 HIT at +", DoubleToString(profit_percent, 2), "%");
+            TP3_Hit = true;
+        }
+    }
+    
+    // Check Entry 2/3 filled
+    if(Entry2_Ticket > 0 && !Entry2_Executed)
+    {
+        for(int i=0; i<PositionsTotal(); i++)
+        {
+            if(position.SelectByIndex(i))
+            {
+                if(position.Magic() == Magic_Number && 
+                   position.Comment() == "TGIM_Entry2")
+                {
+                    Entry2_Executed = true;
+                    Entry2_Price = position.PriceOpen();
+                    Print("✅ Entry 2 FILLED @ ", DoubleToString(Entry2_Price, 2));
+                    
+                    if(Enable_StopLoss && StopLoss_Price > 0)
+                    {
+                        trade.PositionModify(position.Ticket(), StopLoss_Price, 0);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    
+    if(Entry3_Ticket > 0 && !Entry3_Executed)
+    {
+        for(int i=0; i<PositionsTotal(); i++)
+        {
+            if(position.SelectByIndex(i))
+            {
+                if(position.Magic() == Magic_Number && 
+                   position.Comment() == "TGIM_Entry3")
+                {
+                    Entry3_Executed = true;
+                    Entry3_Price = position.PriceOpen();
+                    Print("✅ Entry 3 FILLED @ ", DoubleToString(Entry3_Price, 2));
+                    
+                    if(Enable_StopLoss && StopLoss_Price > 0)
+                    {
+                        trade.PositionModify(position.Ticket(), StopLoss_Price, 0);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Check grid execution
+    for(int i=0; i<Num_Grid_Orders; i++)
+    {
+        if(Grid_Tickets[i] > 0 && !Grid_Executed[i])
+        {
+            for(int j=0; j<PositionsTotal(); j++)
+            {
+                if(position.SelectByIndex(j))
+                {
+                    string expected_comment = StringFormat("TGIM_Grid_%d", i+1);
+                    if(position.Magic() == Magic_Number && 
+                       position.Comment() == expected_comment)
+                    {
+                        Grid_Executed[i] = true;
+                        Print("✅ Grid ", i+1, " FILLED @ ", 
+                              DoubleToString(position.PriceOpen(), 2));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Close percentage of positions                                     |
+//+------------------------------------------------------------------+
+void ClosePercentOfPositions(double percent, string reason)
+{
+    if(percent <= 0 || percent > 100)
+        return;
+    
+    double total_lots = 0;
+    int pos_count = 0;
+    
+    for(int i=0; i<PositionsTotal(); i++)
+    {
+        if(position.SelectByIndex(i))
+        {
+            if(position.Symbol() == _Symbol && position.Magic() == Magic_Number)
+            {
+                total_lots += position.Volume();
+                pos_count++;
+            }
+        }
+    }
+    
+    if(total_lots <= 0)
+        return;
+    
+    double lots_to_close = total_lots * (percent / 100.0);
+    double lots_closed = 0;
+    
+    Print("🔄 Closing ", DoubleToString(percent, 0), "% @ ", reason);
+    Print("   Total lots: ", DoubleToString(total_lots, 2));
+    Print("   To close: ", DoubleToString(lots_to_close, 2));
+    
+    for(int i=PositionsTotal()-1; i>=0 && lots_closed < lots_to_close; i--)
+    {
+        if(position.SelectByIndex(i))
+        {
+            if(position.Symbol() == _Symbol && position.Magic() == Magic_Number)
+            {
+                double volume = position.Volume();
+                double close_volume = MathMin(volume, lots_to_close - lots_closed);
+                
+                if(trade.PositionClosePartial(position.Ticket(), close_volume))
+                {
+                    lots_closed += close_volume;
+                    Print("   ✅ Closed ", DoubleToString(close_volume, 2), " lots");
+                }
+            }
+        }
+    }
+    
+    Print("   Total closed: ", DoubleToString(lots_closed, 2), " lots");
+}
+
+//+------------------------------------------------------------------+
+//| Trailing Block System                                             |
+//+------------------------------------------------------------------+
+void CheckAndExecuteTrailing()
+{
+    if(!Entry1_Executed)
+        return;
+    
+    if(Current_Trail_Level >= Num_Trail_Levels)
+        return;
+    
+    double current_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double profit_percent = (current_price - Entry1_Price) / Entry1_Price * 100.0;
+    
+    double next_trigger = Trail_Triggers[Current_Trail_Level];
+    
+    if(profit_percent < next_trigger)
+        return;
+    
+    int seconds_since_last = (int)(TimeCurrent() - Last_Trail_Time);
+    int min_seconds = Min_Minutes_Between_Trails * 60;
+    
+    if(seconds_since_last < min_seconds && Last_Trail_Time > 0)
+    {
+        return;
+    }
+    
+    Print("╔═══════════════════════════════════════════════════════════════════╗");
+    Print("║       🚀 TRAILING BLOCK TRIGGER ", Current_Trail_Level+1, " 🚀                  ║");
+    Print("╚═══════════════════════════════════════════════════════════════════╝");
+    Print("Current profit: +", DoubleToString(profit_percent, 2), "%");
+    Print("Trigger level: +", DoubleToString(next_trigger, 2), "%");
+    
+    double profit_to_lock = Trail_SL_Offsets[Current_Trail_Level];
+    double new_sl = Entry1_Price * (1.0 + profit_to_lock / 100.0);
+    
+    Print("───────────────────────────────────────────────────────────────────");
+    Print("STEP 1: New Stop Loss");
+    Print("   Old SL: ", DoubleToString(StopLoss_Price, 2));
+    Print("   New SL: ", DoubleToString(new_sl, 2), 
+          " (+", DoubleToString(profit_to_lock, 2), "% locked)");
+    
+    if(new_sl <= StopLoss_Price)
+    {
+        Print("⚠️  New SL not above old SL, skipping");
+        return;
+    }
+    
+    int sl_modified = 0;
+    for(int i=0; i<PositionsTotal(); i++)
+    {
+        if(position.SelectByIndex(i))
+        {
+            if(position.Symbol() == _Symbol && 
+               position.Magic() == Magic_Number &&
+               position.Type() == POSITION_TYPE_BUY)
+            {
+                if(trade.PositionModify(position.Ticket(), new_sl, 0))
+                {
+                    sl_modified++;
+                }
+            }
+        }
+    }
+    
+    Print("   ✅ SL modified for ", sl_modified, " positions");
+    StopLoss_Price = new_sl;
+    
+    Print("───────────────────────────────────────────────────────────────────");
+    Print("STEP 2: Recreate Grid Bot");
+    
+    int cancelled = 0;
+    for(int i=0; i<Num_Grid_Orders; i++)
+    {
+        if(Grid_Tickets[i] > 0 && !Grid_Executed[i])
+        {
+            if(Grid_Triggers[i] < new_sl)
+            {
+                if(trade.OrderDelete(Grid_Tickets[i]))
+                {
+                    Print("   🗑️  Grid ", i+1, " cancelled (below new SL)");
+                    cancelled++;
+                }
+            }
+        }
+    }
+    
+    Print("   Cancelled: ", cancelled, " old grid orders");
+    
+    double grid_offset = Trail_Grid_Offset_Percent / 100.0 * current_price;
+    double grid_top = current_price - grid_offset;
+    double grid_bottom = new_sl;
+    double grid_range = grid_top - grid_bottom;
+    
+    Print("   New grid range:");
+    Print("      Top: ", DoubleToString(grid_top, 2));
+    Print("      Bottom: ", DoubleToString(grid_bottom, 2), " (new SL)");
+    Print("      Range: ", DoubleToString(grid_range / _Point, 0), " points");
+    
+    if(grid_range / _Point < Min_Grid_Range_Points)
+    {
+        grid_top = grid_bottom + (Min_Grid_Range_Points * _Point);
+        grid_range = grid_top - grid_bottom;
+        Print("   ⚠️  Expanded to minimum ", Min_Grid_Range_Points, " points");
+    }
+    
+    int new_num_grids = (int)MathCeil(grid_range / (Grid_Base_Step_Points * _Point));
+    new_num_grids = MathMin(new_num_grids, Max_Grid_Orders_After_Trail);
+    new_num_grids = MathMax(new_num_grids, 2);
+    
+    Print("   New grid count: ", new_num_grids, " orders");
+    
+    ArrayResize(Grid_Triggers, new_num_grids);
+    ArrayResize(Grid_TPs, new_num_grids);
+    ArrayResize(Grid_Tickets, new_num_grids);
+    ArrayResize(Grid_Executed, new_num_grids);
+    Num_Grid_Orders = new_num_grids;
+    
+    double new_grid_step = grid_range / new_num_grids;
+    
+    int placed = 0;
+    for(int i=0; i<new_num_grids; i++)
+    {
+        Grid_Triggers[i] = grid_top - (new_grid_step * (i+1));
+        
+        if(i < new_num_grids - 1)
+            Grid_TPs[i] = Grid_Triggers[i+1];
+        else
+            Grid_TPs[i] = new_sl;
+        
+        string comment = StringFormat("TGIM_Grid_T%d_%d", 
+                                     Current_Trail_Level+1, i+1);
+        
+        if(trade.SellStop(Grid_Lot_Size, Grid_Triggers[i], _Symbol,
+                          0, Grid_TPs[i], ORDER_TIME_GTC, 0, comment))
+        {
+            Grid_Tickets[i] = trade.ResultOrder();
+            Grid_Executed[i] = false;
+            Print("   ✅ Grid ", i+1, ": ", 
+                  DoubleToString(Grid_Triggers[i], 2), 
+                  " -> ", DoubleToString(Grid_TPs[i], 2));
+            placed++;
+        }
+    }
+    
+    Print("   Placed: ", placed, "/", new_num_grids, " grid orders");
+    
+    Current_Trail_Level++;
+    Last_Trail_Time = TimeCurrent();
+    Trailing_Active = true;
+    
+    if(Current_Trail_Level == 1)
+    {
+        Print("╔═══════════════════════════════════════════════════════════════════╗");
+        Print("║           ⚡⚡⚡ TRADE NOW RISK-FREE! ⚡⚡⚡                   ║");
+        Print("║         Stop Loss @ Breakeven - No loss possible!                ║");
+        Print("╚═══════════════════════════════════════════════════════════════════╝");
+    }
+    else
+    {
+        Print("╔═══════════════════════════════════════════════════════════════════╗");
+        Print("║         💰 PROFIT LOCKED: +", 
+              DoubleToString(profit_to_lock, 2), "% GUARANTEED 💰                ║");
+        Print("╚═══════════════════════════════════════════════════════════════════╝");
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Update Dashboard                                                   |
+//+------------------------------------------------------------------+
+void UpdateDashboard()
+{
+    string bg_name = "TGIM_Dashboard_BG";
+    if(ObjectFind(0, bg_name) < 0)
+    {
+        ObjectCreate(0, bg_name, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+        ObjectSetInteger(0, bg_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+        ObjectSetInteger(0, bg_name, OBJPROP_SELECTABLE, false);
+        ObjectSetInteger(0, bg_name, OBJPROP_HIDDEN, true);
+        ObjectSetInteger(0, bg_name, OBJPROP_BACK, true);
+    }
+    
+    ObjectSetInteger(0, bg_name, OBJPROP_XDISTANCE, Dashboard_X - 10);
+    ObjectSetInteger(0, bg_name, OBJPROP_YDISTANCE, Dashboard_Y - 10);
+    ObjectSetInteger(0, bg_name, OBJPROP_XSIZE, Dashboard_Width);
+    ObjectSetInteger(0, bg_name, OBJPROP_YSIZE, Dashboard_Height);
+    
+    long bg_argb = ColorToARGB(Dashboard_BG_Color, Dashboard_BG_Opacity);
+    ObjectSetInteger(0, bg_name, OBJPROP_BGCOLOR, bg_argb);
+    ObjectSetInteger(0, bg_name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+    ObjectSetInteger(0, bg_name, OBJPROP_COLOR, Dashboard_Border_Color);
+    ObjectSetInteger(0, bg_name, OBJPROP_WIDTH, 2);
+    
+    double current_price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+    double total_pnl = 0;
+    double total_lots = 0;
+    double weighted_entry = 0;
+    int positions_count = 0;
+    
+    for(int i=0; i<PositionsTotal(); i++)
+    {
+        if(position.SelectByIndex(i))
+        {
+            if(position.Symbol() == _Symbol && position.Magic() == Magic_Number)
+            {
+                total_pnl += position.Profit();
+                total_lots += position.Volume();
+                weighted_entry += position.PriceOpen() * position.Volume();
+                positions_count++;
+            }
+        }
+    }
+    
+    string pnl_pct = "0.00";
+    if(total_lots > 0 && weighted_entry > 0)
+    {
+        double avg_entry = weighted_entry / total_lots;
+        double pct = (current_price - avg_entry) / avg_entry * 100.0;
+        pnl_pct = DoubleToString(pct, 2);
+    }
+    
+    datetime current_time = TimeCurrent() + (Broker_GMT_Offset * 3600);
+    MqlDateTime dt;
+    TimeToStruct(current_time, dt);
+    string day_names[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    
+    int grids_filled = 0;
+    for(int i=0; i<Num_Grid_Orders; i++)
+    {
+        if(Grid_Executed[i]) grids_filled++;
+    }
+    
+    int line_y = Dashboard_Y;
+    int line_spacing = 15;
+    
+    CreateDashboardLine("TGIM_Dash_L1", Dashboard_X, line_y, 
+                        "VECCHIO COME IL CUCCO v4.2.4", 
+                        clrYellow, 10, "Arial Black");
+    line_y += line_spacing + 5;
+    
+    CreateDashboardLine("TGIM_Dash_L2", Dashboard_X, line_y,
+                        "SIMPLIFIED ENTRY | Trailing Block",
+                        Dashboard_Text_Color, 8, "Arial");
+    line_y += line_spacing + 5;
+    
+    CreateDashboardLine("TGIM_Dash_Sep1", Dashboard_X, line_y,
+                        "================================================",
+                        clrGray, 8, "Courier New");
+    line_y += line_spacing;
+    
+    string status_text = Main_Entry_Placed ? "Status: ACTIVE ✅" : "Status: WAITING ⏳";
+    color status_color = Main_Entry_Placed ? clrLime : clrYellow;
+    CreateDashboardLine("TGIM_Dash_L3", Dashboard_X, line_y,
+                        status_text, status_color, 9, "Arial Bold");
+    line_y += line_spacing;
+    
+    CreateDashboardLine("TGIM_Dash_L4", Dashboard_X, line_y,
+                        "Price: " + DoubleToString(current_price, 2),
+                        Dashboard_Text_Color, 9, "Arial");
+    line_y += line_spacing;
+    
+    string time_str = "Time: " + day_names[dt.day_of_week] + " " + 
+                      StringFormat("%02d:%02d", dt.hour, dt.min) + " GMT" +
+                      (Broker_GMT_Offset >= 0 ? "+" : "") + 
+                      IntegerToString(Broker_GMT_Offset);
+    CreateDashboardLine("TGIM_Dash_L5", Dashboard_X, line_y,
+                        time_str, Dashboard_Text_Color, 9, "Arial");
+    line_y += line_spacing + 3;
+    
+    CreateDashboardLine("TGIM_Dash_Sep2", Dashboard_X, line_y,
+                        "------------------------------------------------",
+                        clrGray, 8, "Courier New");
+    line_y += line_spacing;
+    
+    string pnl_str = "P&L: $" + DoubleToString(total_pnl, 2) + 
+                     " (" + pnl_pct + "%)";
+    color pnl_color = total_pnl > 0 ? clrLime : (total_pnl < 0 ? clrRed : Dashboard_Text_Color);
+    CreateDashboardLine("TGIM_Dash_L6", Dashboard_X, line_y,
+                        pnl_str, pnl_color, 9, "Arial Bold");
+    line_y += line_spacing;
+    
+    CreateDashboardLine("TGIM_Dash_L7", Dashboard_X, line_y,
+                        "Positions: " + IntegerToString(positions_count) + 
+                        " | Lots: " + DoubleToString(total_lots, 2),
+                        Dashboard_Text_Color, 9, "Arial");
+    line_y += line_spacing + 3;
+    
+    CreateDashboardLine("TGIM_Dash_Sep3", Dashboard_X, line_y,
+                        "------------------------------------------------",
+                        clrGray, 8, "Courier New");
+    line_y += line_spacing;
+    
+    CreateDashboardLine("TGIM_Dash_L8", Dashboard_X, line_y,
+                        "MAIN ENTRIES:",
+                        clrAqua, 9, "Arial Bold");
+    line_y += line_spacing;
+    
+    string e1_text = "  E1: " + (Entry1_Executed ? "[OK] " : "[--] ") +
+                     (Entry1_Executed ? DoubleToString(Entry1_Price, 2) : "-----") +
+                     " | " + DoubleToString(Entry1_Lots, 2) + " lots (50%)";
+    color e1_color = Entry1_Executed ? clrLime : clrGray;
+    CreateDashboardLine("TGIM_Dash_L9", Dashboard_X, line_y,
+                        e1_text, e1_color, 8, "Courier New");
+    line_y += line_spacing;
+    
+    string e2_status = Entry2_Executed ? "[OK]" : (Entry2_Ticket > 0 ? "[P ]" : "[--]");
+    string e2_text = "  E2: " + e2_status + " " +
+                     DoubleToString(Entry2_Price, 2) +
+                     " | " + DoubleToString(Entry2_Lots, 2) + " lots (25%)";
+    color e2_color = Entry2_Executed ? clrLime : (Entry2_Ticket > 0 ? clrYellow : clrGray);
+    CreateDashboardLine("TGIM_Dash_L10", Dashboard_X, line_y,
+                        e2_text, e2_color, 8, "Courier New");
+    line_y += line_spacing;
+    
+    string e3_status = Entry3_Executed ? "[OK]" : (Entry3_Ticket > 0 ? "[P ]" : "[--]");
+    string e3_text = "  E3: " + e3_status + " " +
+                     DoubleToString(Entry3_Price, 2) +
+                     " | " + DoubleToString(Entry3_Lots, 2) + " lots (25%)";
+    color e3_color = Entry3_Executed ? clrLime : (Entry3_Ticket > 0 ? clrYellow : clrGray);
+    CreateDashboardLine("TGIM_Dash_L11", Dashboard_X, line_y,
+                        e3_text, e3_color, 8, "Courier New");
+    line_y += line_spacing + 3;
+    
+    if(Entry1_Executed)
+    {
+        CreateDashboardLine("TGIM_Dash_Sep4", Dashboard_X, line_y,
+                            "------------------------------------------------",
+                            clrGray, 8, "Courier New");
+        line_y += line_spacing;
+        
+        CreateDashboardLine("TGIM_Dash_L12", Dashboard_X, line_y,
+                            "TAKE PROFITS:",
+                            clrAqua, 9, "Arial Bold");
+        line_y += line_spacing;
+        
+        double tp1_price = Entry1_Price * (1 + TP1_Percent/100.0);
+        double tp2_price = Entry1_Price * (1 + TP2_Percent/100.0);
+        double tp3_price = Entry1_Price * (1 + TP3_Percent/100.0);
+        
+        string tp1_text = "  TP1: " + (TP1_Hit ? "[HIT] " : "[   ] ") +
+                          DoubleToString(tp1_price, 2) + 
+                          " (+" + DoubleToString(TP1_Percent, 2) + "%)";
+        color tp1_color = TP1_Hit ? clrLime : clrDodgerBlue;
+        CreateDashboardLine("TGIM_Dash_L13", Dashboard_X, line_y,
+                            tp1_text, tp1_color, 8, "Courier New");
+        line_y += line_spacing;
+        
+        string tp2_text = "  TP2: " + (TP2_Hit ? "[HIT] " : "[   ] ") +
+                          DoubleToString(tp2_price, 2) + 
+                          " (+" + DoubleToString(TP2_Percent, 2) + "%)";
+        color tp2_color = TP2_Hit ? clrLime : clrDodgerBlue;
+        CreateDashboardLine("TGIM_Dash_L14", Dashboard_X, line_y,
+                            tp2_text, tp2_color, 8, "Courier New");
+        line_y += line_spacing;
+        
+        string tp3_text = "  TP3: " + (TP3_Hit ? "[HIT] " : "[   ] ") +
+                          DoubleToString(tp3_price, 2) + 
+                          " (+" + DoubleToString(TP3_Percent, 2) + "%)";
+        color tp3_color = TP3_Hit ? clrLime : clrDodgerBlue;
+        CreateDashboardLine("TGIM_Dash_L15", Dashboard_X, line_y,
+                            tp3_text, tp3_color, 8, "Courier New");
+        line_y += line_spacing + 3;
+    }
+    
+    if(Enable_StopLoss && StopLoss_Price > 0)
+    {
+        CreateDashboardLine("TGIM_Dash_Sep5", Dashboard_X, line_y,
+                            "------------------------------------------------",
+                            clrGray, 8, "Courier New");
+        line_y += line_spacing;
+        
+        double sl_distance = Entry1_Executed ? 
+                            (Entry1_Price - StopLoss_Price) / Entry1_Price * 100.0 : 
+                            StopLoss_Percent;
+        string sl_text = "STOP LOSS: " + DoubleToString(StopLoss_Price, 2) +
+                         " (-" + DoubleToString(sl_distance, 2) + "%)";
+        CreateDashboardLine("TGIM_Dash_L16", Dashboard_X, line_y,
+                            sl_text, clrRed, 9, "Arial Bold");
+        line_y += line_spacing + 3;
+    }
+    
+    if(Enable_Grid_Trailing && Trailing_Active)
+    {
+        CreateDashboardLine("TGIM_Dash_Sep6", Dashboard_X, line_y,
+                            "------------------------------------------------",
+                            clrGray, 8, "Courier New");
+        line_y += line_spacing;
+        
+        string trail_text = "TRAILING ACTIVE: Level " + IntegerToString(Current_Trail_Level) + 
+                           "/" + IntegerToString(Num_Trail_Levels);
+        CreateDashboardLine("TGIM_Dash_L17", Dashboard_X, line_y,
+                            trail_text, clrLimeGreen, 9, "Arial Bold");
+        line_y += line_spacing;
+        
+        if(Current_Trail_Level > 0)
+        {
+            double locked = Trail_SL_Offsets[Current_Trail_Level-1];
+            string locked_text = "  Profit Locked: +" + DoubleToString(locked, 2) + "% 💰";
+            CreateDashboardLine("TGIM_Dash_L18", Dashboard_X, line_y,
+                                locked_text, clrGold, 9, "Arial Bold");
+            line_y += line_spacing + 3;
+        }
+    }
+    
+    CreateDashboardLine("TGIM_Dash_Sep7", Dashboard_X, line_y,
+                        "------------------------------------------------",
+                        clrGray, 8, "Courier New");
+    line_y += line_spacing;
+    
+    string grid_header = "GRID: " + IntegerToString(Num_Grid_Orders) + " orders";
+    if(Grid_Dynamic_Step > 0)
+    {
+        double step_points = Grid_Dynamic_Step / _Point;
+        grid_header += " | " + DoubleToString(step_points, 0) + " pts";
+    }
+    CreateDashboardLine("TGIM_Dash_L19", Dashboard_X, line_y,
+                        grid_header, clrOrange, 9, "Arial Bold");
+    line_y += line_spacing;
+    
+    if(Num_Grid_Orders > 0)
+    {
+        string grid_status = "  Filled: " + IntegerToString(grids_filled) + "/" +
+                             IntegerToString(Num_Grid_Orders);
+        CreateDashboardLine("TGIM_Dash_L20", Dashboard_X, line_y,
+                            grid_status, Dashboard_Text_Color, 8, "Arial");
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Create Dashboard Line                                             |
+//+------------------------------------------------------------------+
+void CreateDashboardLine(string obj_name, int x, int y, string text, 
+                         color clr, int font_size, string font)
+{
+    if(ObjectFind(0, obj_name) < 0)
+    {
+        ObjectCreate(0, obj_name, OBJ_LABEL, 0, 0, 0);
+        ObjectSetInteger(0, obj_name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+        ObjectSetInteger(0, obj_name, OBJPROP_SELECTABLE, false);
+        ObjectSetInteger(0, obj_name, OBJPROP_HIDDEN, true);
+        ObjectSetInteger(0, obj_name, OBJPROP_BACK, false);
+    }
+    
+    ObjectSetInteger(0, obj_name, OBJPROP_XDISTANCE, x);
+    ObjectSetInteger(0, obj_name, OBJPROP_YDISTANCE, y);
+    ObjectSetInteger(0, obj_name, OBJPROP_COLOR, clr);
+    ObjectSetInteger(0, obj_name, OBJPROP_FONTSIZE, font_size);
+    ObjectSetString(0, obj_name, OBJPROP_FONT, font);
+    ObjectSetString(0, obj_name, OBJPROP_TEXT, text);
+}
+
+//+------------------------------------------------------------------+
+//| Update Price Lines                                                 |
+//+------------------------------------------------------------------+
+void UpdatePriceLines()
+{
+    if(Entry1_Executed)
+    {
+        DrawPriceLine("TGIM_Entry1_Line", Entry1_Price, Entry_Filled_Color, 
+                      STYLE_SOLID, 2, "Entry 1");
+        
+        if(Show_TP_Dots)
+        {
+            double tp1_price = Entry1_Price * (1 + TP1_Percent/100.0);
+            double tp2_price = Entry1_Price * (1 + TP2_Percent/100.0);
+            double tp3_price = Entry1_Price * (1 + TP3_Percent/100.0);
+            
+            DrawDot("TGIM_TP1_Dot", tp1_price, TP_Dot_Color);
+            DrawDot("TGIM_TP2_Dot", tp2_price, TP_Dot_Color);
+            DrawDot("TGIM_TP3_Dot", tp3_price, TP_Dot_Color);
+        }
+    }
+    
+    if(Entry2_Price > 0)
+    {
+        color e2_color = Entry2_Executed ? Entry_Filled_Color : Entry_Pending_Color;
+        int e2_style = Entry2_Executed ? STYLE_SOLID : STYLE_DASH;
+        DrawPriceLine("TGIM_Entry2_Line", Entry2_Price, e2_color, e2_style, 1, "Entry 2");
+    }
+    
+    if(Entry3_Price > 0)
+    {
+        color e3_color = Entry3_Executed ? Entry_Filled_Color : Entry_Pending_Color;
+        int e3_style = Entry3_Executed ? STYLE_SOLID : STYLE_DASH;
+        DrawPriceLine("TGIM_Entry3_Line", Entry3_Price, e3_color, e3_style, 1, "Entry 3");
+    }
+    
+    if(Enable_StopLoss && StopLoss_Price > 0)
+    {
+        DrawPriceLine("TGIM_StopLoss_Line", StopLoss_Price, StopLoss_Color,
+                      STYLE_DASHDOT, 2, "STOP LOSS");
+        
+        if(Enable_Drag_SL)
+        {
+            ObjectSetInteger(0, "TGIM_StopLoss_Line", OBJPROP_SELECTABLE, true);
+        }
+        
+        if(Show_SL_Dots)
+        {
+            DrawDot("TGIM_SL_Dot", StopLoss_Price, SL_Dot_Color);
+        }
+    }
+    
+    for(int i=0; i<Num_Grid_Orders; i++)
+    {
+        string line_name = "TGIM_Grid_" + IntegerToString(i+1) + "_Line";
+        int grid_style = Grid_Executed[i] ? STYLE_SOLID : STYLE_DOT;
+        color grid_color = Grid_Executed[i] ? clrRed : Grid_Color;
+        
+        DrawPriceLine(line_name, Grid_Triggers[i], grid_color, grid_style, 1,
+                      "Grid " + IntegerToString(i+1));
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Draw Price Line                                                    |
+//+------------------------------------------------------------------+
+void DrawPriceLine(string name, double price, color clr, int style, int width, string label)
+{
+    if(ObjectFind(0, name) < 0)
+    {
+        ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
+    }
+    
+    ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+    ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+    ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
+    ObjectSetString(0, name, OBJPROP_TEXT, label);
+}
+
+//+------------------------------------------------------------------+
+//| Draw Dot                                                           |
+//+------------------------------------------------------------------+
+void DrawDot(string name, double price, color clr)
+{
+    datetime time_now = TimeCurrent();
+    
+    if(ObjectFind(0, name) < 0)
+    {
+        ObjectCreate(0, name, OBJ_ARROW, 0, time_now, price);
+        ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
+        ObjectSetInteger(0, name, OBJPROP_WIDTH, 3);
+    }
+    
+    ObjectSetInteger(0, name, OBJPROP_TIME, time_now);
+    ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Convert color with opacity to ARGB                        |
+//+------------------------------------------------------------------+
+long ColorToARGB(color clr, int opacity)
+{
+    int r = (clr & 0xFF);
+    int g = ((clr >> 8) & 0xFF);
+    int b = ((clr >> 16) & 0xFF);
+    
+    return (long)(((long)opacity << 24) | (b << 16) | (g << 8) | r);
+}
+
+//+------------------------------------------------------------------+
+//| Delete All Objects                                                 |
+//+------------------------------------------------------------------+
+void DeleteAllObjects()
+{
+    int total = ObjectsTotal(0);
+    for(int i=total-1; i>=0; i--)
+    {
+        string name = ObjectName(0, i);
+        if(StringFind(name, "TGIM_") == 0)
+        {
+            ObjectDelete(0, name);
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//|                           ⚡ END OF CODE ⚡                         |
+//|                                                                   |
+//|                 VECCHIO COME IL CUCCO v4.2.4                      |
+//|                   Simplified Entry Edition                        |
+//|                                                                   |
+//|  🎯 Features:                                                     |
+//|    - NO Gap/IBS/ATR checks                                        |
+//|    - Entry SEMPRE a orario fisso (16:50 lunedì)                  |
+//|    - Risk-Free dopo primo TP                                      |
+//|    - Grid Bot Dinamico con Trailing                               |
+//|    - Profit Lock Progessivo                                      |
+//|                                                                   |
+//|  💰 Target: CAGR 8-15% | Win Rate 68-70%                         |
+//|                                                                   |
+//+------------------------------------------------------------------+cd /Users/ale/Desktop/GitHub/mql5-trading-bot
+git status
+git add -A
+git commit -m "Add/Update all EA files"
+# Se non hai remote impostato:
+# git remote add origin git@github.com:TUOUSER/mql5-trading-bot.git
+# git branch -M main
+git push -u origin main
